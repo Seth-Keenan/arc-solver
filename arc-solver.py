@@ -53,7 +53,52 @@ def digest_training_data(folder_path):
 # --------------------------
 # Step 2: Solver Logic
 # --------------------------
-def solve_arc_task(train_pairs, test_input, global_color=None):
+def infer_color_permutation_csp(train_pairs, enforce_injective=True):
+    """
+    CSP-style color mapping:
+    - Variables: input colors observed in training inputs.
+    - Domains: singleton choices implied by aligned input/output cells.
+    - Constraints: functional; injectivity.
+    If any conflict is found, return None so we fall back to the baseline.
+    """
+    mapping = {}
+    used_targets = set()
+
+    for pair in train_pairs:
+        a = np.array(pair["input"])
+        b = np.array(pair["output"])
+        if a.shape != b.shape:
+            continue
+
+        for x, y in zip(a.ravel(), b.ravel()):
+            x, y = int(x), int(y)
+
+            # functional constraint
+            if x in mapping and mapping[x] != y:
+                return None  # conflict → not a pure color-permutation task
+
+            # injectivity check
+            if enforce_injective and x not in mapping and y in used_targets:
+                return None  # two inputs trying to map to same output
+
+            if x not in mapping:
+                mapping[x] = y
+                if enforce_injective:
+                    used_targets.add(y)
+
+    return mapping if mapping else None
+
+
+def csp_solver(train_pairs, test_input, global_color=None):
+    test = np.array(test_input)
+    csp_map = infer_color_permutation_csp(train_pairs, enforce_injective=True)
+    if csp_map:
+        pred = np.vectorize(lambda c: csp_map.get(int(c), int(c)))(test)
+        return pred.tolist()
+    # fallback to your original baseline
+    return solve_arc_task_baseline(train_pairs, test_input, global_color)
+
+def solve_arc_task_baseline(train_pairs, test_input, global_color=None):
     """
     Learns a simple color mapping from training and applies it to test input.
     Falls back to global color fill if mapping fails.
@@ -99,7 +144,7 @@ def run_on_folder(folder_path, global_color=None):
         print(f"\n🧩 Task: {task_id}")
 
         for i, test in enumerate(data["test"]):
-            prediction = solve_arc_task(data["train"], test["input"], global_color)
+            prediction = csp_solver(data["train"], test["input"], global_color)
             expected = test.get("output")
             if expected is not None:
                 is_correct = prediction == expected
